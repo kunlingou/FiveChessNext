@@ -8,6 +8,7 @@ import json
 from collections import defaultdict
 import random
 import pygame
+import heapq
 
 INVALID_ACTION = (-1, -1)
 
@@ -36,6 +37,9 @@ STONE_RADIUS = 20
 BUTTON_WIDTH = 100
 BUTTON_HEIGHT = 40
 
+BUTTON_TITLE_START = "重新开始"
+BUTTON_TITLE_CALC = "智能分析"
+
 INFO_PADDING = 50
 
 COLOR_WHITE = (255, 255, 255)
@@ -51,21 +55,43 @@ SCREEN_HEIGHT = SPEC_HEIGHT * STONE_SIZE
 
 class Button:
 
-    def __init__(self, name):
-        self.rect = pygame.Rect(MAP_WIDTH + INFO_PADDING, INFO_PADDING, BUTTON_WIDTH, BUTTON_HEIGHT)
+    def __init__(self, name, pos):
+        self.rect = pygame.Rect(pos[0], pos[1], BUTTON_WIDTH, BUTTON_HEIGHT)
         self.name = name
 
     def draw(self, screen):
         screen.fill((26, 173, 25), self.rect)
 
-        msg_image = pygame.font.SysFont(None, BUTTON_HEIGHT * 2 // 3).render( self.name, True, (0, 0, 0), (26, 173, 25))
+        msg_image = pygame.font.SysFont("SimHei", BUTTON_HEIGHT * 3 // 5).render( self.name, True, (255, 255, 255), (26, 173, 25))
         msg_image_rect = msg_image.get_rect()
         msg_image_rect.center = self.rect.center
         screen.blit(msg_image, msg_image_rect)
 
     def click(self, env):
-        if self.name == "Start":
+        if self.name == BUTTON_TITLE_START:
             env.start()
+        elif self.name == BUTTON_TITLE_CALC:
+
+            agent1 = Agent(env, env.cur_round)
+            agent2 = Agent(env, env.get_next_round())
+
+            agent1.mock_and_learn(agent2, 10000, 3)
+
+            state = agent1.reset()
+            actions = agent1.get_next_actions(state)
+
+            actions = heapq.nlargest(3, actions, key=lambda k: agent1.get_profit(state, k))
+
+            env.next_actions = []
+
+            for action in actions:
+                env.next_actions.append({
+                    "pos": action,
+                    "profit": agent1.get_profit(state, action)
+                })
+
+            with open("learn_map.json", "w") as f:
+                f.write(json.dumps({"agent1": agent1.learn_map, "agent2": agent2.learn_map}))
 
 
 class Environment:
@@ -77,9 +103,11 @@ class Environment:
         self.game_state = 0
         self.stones = 0
         self.cur_round = 0
+        self.next_actions = 0
 
         self.buttons = [
-            Button("Start")
+            Button(BUTTON_TITLE_START, (MAP_WIDTH + INFO_PADDING, INFO_PADDING)),
+            Button(BUTTON_TITLE_CALC, (MAP_WIDTH + INFO_PADDING, INFO_PADDING + BUTTON_HEIGHT + INFO_PADDING))
         ]
 
         pygame.init()
@@ -93,12 +121,17 @@ class Environment:
         self.game_state = 0
         self.stones = defaultdict(int)
         self.cur_round = STONE_BLACK
+        self.next_actions = []
 
     def play(self):
         self.clock.tick(60)
 
+        # 背景颜色
+
         pygame.draw.rect(self.screen, (247, 238, 214), pygame.Rect(0, 0, MAP_WIDTH, SCREEN_HEIGHT))
         pygame.draw.rect(self.screen, (255, 255, 255), pygame.Rect(MAP_WIDTH, 0, INFO_WIDTH, SCREEN_HEIGHT))
+
+        # 棋盘线条
 
         for i in range(self.height):
             line_width = 2 if i == self.height // 2 else 1
@@ -110,8 +143,12 @@ class Environment:
             width = STONE_SIZE / 2 + i * STONE_SIZE
             pygame.draw.line(self.screen, (0, 0, 0), (width, STONE_SIZE / 2), (width, STONE_SIZE / 2 + (self.height - 1) * STONE_SIZE), line_width)
 
+        # 按钮
+
         for button in self.buttons:
             button.draw(self.screen)
+
+        # 游戏结果
 
         button_rect = pygame.Rect(MAP_WIDTH + INFO_PADDING, INFO_PADDING + BUTTON_WIDTH + INFO_PADDING, BUTTON_WIDTH, BUTTON_HEIGHT)
         self.screen.fill(INFO_COLOR, button_rect)
@@ -129,10 +166,31 @@ class Environment:
             msg_image_rect.center = button_rect.center
             self.screen.blit(msg_image, msg_image_rect)
 
+        # 分析结果
+
+        button_rect = pygame.Rect(MAP_WIDTH + INFO_PADDING, INFO_PADDING + BUTTON_WIDTH + INFO_PADDING + BUTTON_WIDTH, BUTTON_WIDTH,
+                                  BUTTON_HEIGHT)
+        self.screen.fill(INFO_COLOR, button_rect)
+
+        result_height = button_rect.center[1]
+        for action in self.next_actions:
+            cal_result = str(action["pos"]) + " " + str(round(action["profit"], 2))
+            msg_image = pygame.font.SysFont("SimHei", BUTTON_HEIGHT * 2 // 4).render(cal_result, True, (0, 0, 0), (26, 173, 25))
+            msg_image_rect = msg_image.get_rect()
+            msg_image_rect.center = (button_rect.center[0], result_height)
+            self.screen.blit(msg_image, msg_image_rect)
+
+            result_height += BUTTON_HEIGHT
+
+        # 棋子
+
         for k, v in self.stones.items():
             if v == 0:
                 continue
             pygame.draw.circle(self.screen, STONE_INFO[v]["color"], ((k[0] + 0.5) * STONE_SIZE, (k[1] + 0.5) * STONE_SIZE), STONE_RADIUS)
+
+    def get_next_round(self):
+        return STONE_BLACK + STONE_WHITE - self.cur_round
 
     def click(self, click_pos):
         print(f"click success, pos: {click_pos}")
@@ -148,7 +206,7 @@ class Environment:
             if self.get_game_result(self.stones, (x, y), self.cur_round):
                 self.game_state = self.cur_round
             else:
-                self.cur_round = STONE_BLACK + STONE_WHITE - self.cur_round
+                self.cur_round = self.get_next_round()
 
         else:
             for button in self.buttons:
@@ -187,30 +245,27 @@ class Agent:
 
         self.learning_rate = 0.01
         self.discount_factor = 0.9
-        self.epsilon = 0.1
+        self.epsilon = 0.01
 
     def reset(self):
         return self.env.stones.copy()
 
-    def get_next_action(self, state):
+    def get_next_actions(self, state):
         actions = []
         for x in range(self.env.width):
             for y in range(self.env.height):
                 if state[(x, y)] != STONE_BLANK:
                     continue
                 actions.append((x, y))
+        return actions
 
+    def get_next_action(self, state):
+        actions = self.get_next_actions(state)
         if len(actions) == 0:
             return None
 
         if random.random() <= self.epsilon:
-            quick_sort = lambda array: array if len(array) <= 1 else quick_sort(
-                [item for item in array[1:] if self.get_profit(state, item) <= self.get_profit(state, array[0])]) + [array[0]] + quick_sort(
-                [item for item in array[1:] if self.get_profit(state, item) > self.get_profit(state, array[0])])
-
-            actions = quick_sort(actions)
-
-            return actions[0]
+            return heapq.nlargest(1, actions, key=lambda k: self.get_profit(state, k))[0]
         else:
             return random.choice(actions)
 
@@ -243,9 +298,9 @@ class Agent:
         if not self.learn_map.__contains__(state_key):
             self.learn_map[state_key] = {}
 
-        next_state_key = self.get_state_key(state)
-        if not self.learn_map.__contains__(state_key):
-            self.learn_map[state_key] = {}
+        next_state_key = self.get_state_key(next_state)
+        if not self.learn_map.__contains__(next_state_key):
+            self.learn_map[next_state_key] = {}
 
         action_key = str(action[0]) + "_" + str(action[1])
         if not self.learn_map[state_key].__contains__(action_key):
@@ -271,43 +326,43 @@ class Agent:
                 print(f"{state[(x, y)]} ", end="")
             print("")
 
+    def mock_and_learn(self, agent2, try_times, max_steps):
 
-def main2():
-    agent1 = Agent(Environment({"width": 6, "height": 6}), STONE_BLACK)
+        for i in range(try_times):
+            state = self.reset()
 
-    agent2 = Agent(Environment({"width": 6, "height": 6}), STONE_WHITE)
+            game_over = 0
+            step = 0
 
-    for i in range(10):
+            while game_over == 0:
 
-        state = agent1.reset()
+                for agent in [self, agent2]:
+                    action = agent.get_next_action(state)
 
-        game_over = 0
+                    if not action:
+                        # print(f"{i} game over1")
+                        game_over = 1
+                        break
 
-        while game_over == 0:
+                    reward, next_state = agent.mock(state, action)
 
-            for agent in [agent1, agent2]:
-                action = agent.get_next_action(state)
+                    # agent.print_state(next_state)
 
-                if not action:
-                    print(f"{i} game over1")
-                    game_over = 1
-                    break
+                    agent.learn(state, action, next_state, reward)
 
-                reward, next_state = agent.mock(state, action)
+                    if reward == 100:
+                        print(f"{i} game over2 action {action}")
+                        game_over = 2
+                        break
 
-                # agent.print_state(next_state)
+                    step += 1
 
-                agent.learn(state, action, next_state, reward)
+                    if 0 < max_steps <= step:
+                        # print(f"{i} game over3")
+                        game_over = 3
+                        break
 
-                if reward == 100:
-                    print(f"{i} game over2")
-                    game_over = 2
-                    break
-
-                state = next_state
-
-    with open("learn_map.json", "w") as f:
-        f.write(json.dumps({"agent1": agent1.learn_map, "agent2": agent2.learn_map}))
+                    state = next_state
 
 
 def main():

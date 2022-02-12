@@ -4,4 +4,8 @@
 
 ### 普通对战场景
 
-![img.png](doc/images/img_001.png)
+![img_001.png](doc/images/img_001.png)
+
+### 智能分析场景
+
+![img_002.png](doc/images/img_002.png)
