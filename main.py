@@ -75,12 +75,12 @@ class Button:
             agent1 = Agent(env, env.cur_round)
             agent2 = Agent(env, env.get_next_round())
 
-            agent1.mock_and_learn(agent2, 10000, 3)
+            agent1.mock_and_learn(agent2, 10000, 7)
 
             state = agent1.reset()
             actions = agent1.get_next_actions(state)
 
-            actions = heapq.nlargest(3, actions, key=lambda k: agent1.get_profit(state, k))
+            actions = heapq.nlargest(5, actions, key=lambda k: agent1.get_profit(state, k))
 
             env.next_actions = []
 
@@ -90,8 +90,20 @@ class Button:
                     "profit": agent1.get_profit(state, action)
                 })
 
+            print(f"state: {agent1.get_state_key(state)}")
+
+            learn_map = {}
+            for k, v in agent1.learn_map.items():
+                if sum(v.values()) == 0:
+                    continue
+                learn_map[k] = {}
+                for vk, vv in v.items():
+                    if vv == 0:
+                        continue
+                    learn_map[k][vk] = vv
+
             with open("learn_map.json", "w") as f:
-                f.write(json.dumps({"agent1": agent1.learn_map, "agent2": agent2.learn_map}))
+                f.write(json.dumps(learn_map))
 
 
 class Environment:
@@ -230,9 +242,35 @@ class Environment:
                         break
                     finish_len += 1
                     pos = next_pos
+
+                pos = cur_pos
+
+                while finish_len < 5:
+                    next_pos = (pos[0] - x_offset, pos[1] - y_offset)
+                    if state[next_pos] != stone_color:
+                        break
+                    finish_len += 1
+                    pos = next_pos
+
                 if finish_len == 5:
                     return True
         return False
+
+
+def deep_copy(d):
+
+    res = defaultdict(int)
+
+    if not d:
+        return {}
+
+    for k, v in d.items():
+        if not isinstance(v, dict):
+            res[k] = v
+        else:
+            res[k] = deep_copy(v)
+
+    return res
 
 
 class Agent:
@@ -244,17 +282,22 @@ class Agent:
         self.learn_map = {}
 
         self.learning_rate = 0.01
-        self.discount_factor = 0.9
+        self.discount_factor = 0.5
         self.epsilon = 0.01
 
     def reset(self):
-        return self.env.stones.copy()
+        return deep_copy(self.env.stones)
 
     def get_next_actions(self, state):
         actions = []
         for x in range(self.env.width):
             for y in range(self.env.height):
-                if state[(x, y)] != STONE_BLANK:
+                cur_pos = (x, y)
+                if state[cur_pos] != STONE_BLANK:
+                    continue
+                if sum([state[pos] for pos in [(cur_pos[0], cur_pos[1] - 1), (cur_pos[0] + 1, cur_pos[1] - 1), (cur_pos[0] + 1, cur_pos[1]),
+                    (cur_pos[0] + 1, cur_pos[1] + 1), (cur_pos[0], cur_pos[1] + 1), (cur_pos[0] - 1, cur_pos[1] + 1),
+                    (cur_pos[0] - 1, cur_pos[1]), (cur_pos[0] - 1, cur_pos[1] - 1)]]) == 0:
                     continue
                 actions.append((x, y))
         return actions
@@ -289,7 +332,8 @@ class Agent:
     def get_state_key(self, state):
         key = ""
         for i in range(self.env.width * self.env.height):
-            key += str(state[(i % self.env.width, (i + self.env.width - 1) // self.env.width)])
+            v = state[(i % self.env.width, (i + self.env.width - 1) // self.env.width)]
+            key += str(v) if v == self.stone_color else "0"
         return key
 
     def learn(self, state, action, next_state, reward):
